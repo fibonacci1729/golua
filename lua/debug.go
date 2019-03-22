@@ -1,15 +1,6 @@
 package lua
 
-import (
-	// "strings"
-	"fmt"
-	// "os"
-
-	// "github.com/fibonacci1729/golua/lua/code"
-)
-
-// var _ = fmt.Println
-// var _ = os.Exit
+import "fmt"
 
 type Debug interface {
 	// Options(what string) Debug
