@@ -2,61 +2,81 @@ package lua
 
 import (
 	"fmt"
-
 	"github.com/Azure/golua/lua/code"
 )
 
 type (
+	// TODO: comment
 	Callable interface {
+		// Function
 		callable
+		Value
+
+		// Call(Continuation) Continuation
+		// CallN(*Thread, []Value, int) []Value
+		// Call1(*Thread, ...Value) Value
+		// Call(*Thread, ...Value) []Value
 	}
 
-	HasMeta interface {
-		SetMeta(*Table)
-		Meta() *Table
-	}
-
+	// TODO: comment
 	Value interface {
+		value
 		String() string
-		Type(*Thread) Type
+		// Type() string
+		Kind() string
+	}
+
+	// TODO: comment
+	value interface {
 		kind() code.Type
 	}
 )
 
-const (
-	NilType    = code.NilType
-	BoolType   = code.BoolType
-	NumberType = code.NumberType
-	StringType = code.StringType
-	TableType  = code.TableType
-	FuncType   = code.FuncType
-	GoType     = code.GoType
-	ThreadType = code.ThreadType
-	IntType    = code.IntType
-	FloatType  = code.FloatType
-)
-
-type GoValue struct {
-	Value interface{}
-	funcs *Table
+// TODO: comment
+type hasMeta interface {
+	setMeta(*Table)
+	getMeta() *Table
 }
 
+//
+// Builtin types
+//
+
+func (v *GoValue) Kind() string { return v.kind().String() }
+func (v *closure) Kind() string { return v.kind().String() }
+func (v *Thread) Kind() string { return v.kind().String() }
+func (v *Table) Kind() string { return v.kind().String() }
+func (v String) Kind() string { return v.kind().String() }
+func (v Float) Kind() string { return v.kind().String() }
+func (v Int) Kind() string { return v.kind().String() }
+func (v Bool) Kind() string { return v.kind().String() }
+
+func (*GoValue) kind() code.Type { return code.GoType }
+func (*closure) kind() code.Type { return code.FuncType }
+func (*Thread) kind() code.Type { return code.ThreadType }
+func (*Table) kind() code.Type { return code.TableType }
+func (String) kind() code.Type { return code.StringType }
+func (Float) kind() code.Type { return code.FloatType }
+func (Int) kind() code.Type {  return code.IntType }
+func (Bool) kind() code.Type { return code.BoolType }
+
+//
+// Go user types (userdata)
+//
+
+// TODO: comment
+type GoValue struct {
+	Value interface{}
+	Meta  *Table
+}
+
+// TODO: comment
 func (v *GoValue) String() string { return fmt.Sprintf("userdata: %p", v) }
 
-func (v *closure) Type(t *Thread) Type { return t.ls.typeOf(v) }
-func (v *GoValue) Type(t *Thread) Type { return t.ls.typeOf(v) }
-func (v *Thread) Type(t *Thread) Type  { return t.ls.typeOf(v) }
-func (v *Table) Type(t *Thread) Type   { return t.ls.typeOf(v) }
-func (v String) Type(t *Thread) Type   { return t.ls.typeOf(v) }
-func (v Float) Type(t *Thread) Type    { return t.ls.typeOf(v) }
-func (v Int) Type(t *Thread) Type      { return t.ls.typeOf(v) }
-func (v Bool) Type(t *Thread) Type     { return t.ls.typeOf(v) }
-
-func (*closure) kind() code.Type { return FuncType }
-func (*GoValue) kind() code.Type { return GoType }
-func (*Thread) kind() code.Type  { return ThreadType }
-func (*Table) kind() code.Type   { return TableType }
-func (String) kind() code.Type   { return StringType }
-func (Float) kind() code.Type    { return FloatType }
-func (Int) kind() code.Type      { return IntType }
-func (Bool) kind() code.Type     { return BoolType }
+// TODO: comment
+func typeKind(v Value) code.Type {
+	if v == nil {
+		return code.NilType
+	}
+	return v.kind()
+}

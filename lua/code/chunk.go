@@ -24,14 +24,32 @@ type Chunk struct {
 // }
 
 func (chunk *Chunk) Dump(out io.Writer, strip bool) (int, error) {
-	w := &source{ord: order, src: new(bytes.Buffer), strip: strip}
-	n := byte(len(chunk.Main.UpVars))
-	must(w.writeHeader())
-	must(w.write(n))
-	w.writeProto(chunk.Main, "")
-	return out.Write(w.src.Bytes())
+	return Dump(out, chunk.Main, strip)
 }
 
 func (chunk *Chunk) Print(w io.Writer, full bool) {
 	printFunc(w, chunk.Main, full)
+}
+
+func (chunk *Chunk) Strip() { StripDebug(chunk.Main) }
+
+func Dump(out io.Writer, fn *Proto, strip bool) (int, error) {
+	w := &source{ord: order, src: new(bytes.Buffer), strip: strip}
+	n := byte(len(fn.UpVars))
+	must(w.writeHeader())
+	must(w.write(n))
+	w.writeProto(fn, "")
+	return out.Write(w.src.Bytes())
+}
+
+func StripDebug(fn *Proto) {
+	fn.Locals = nil
+	fn.PcLine = nil
+	fn.Source = ""
+	fn.SrcPos = -1
+	fn.EndPos = -1
+
+	for _, fn := range fn.Protos {
+		StripDebug(fn)
+	}
 }

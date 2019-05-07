@@ -1,34 +1,54 @@
 package lua
 
 import (
-	"fmt"
 	"sync"
-
+	"fmt"
+	"os"
 	"github.com/Azure/golua/lua/code"
 )
 
+var _ = fmt.Println
+
 type (
+	// TODO: comment
 	packages struct {
 		searchers *Table
 		loaded    *Table
 		preload   *Table
-		loader    goloader
 	}
 
+	// TODO: comment
+	environ struct {
+		GOLUA_ROOT string
+		GOLUA_INIT string
+		GOLUAGO    string
+		GOLUA      string
+	}
+
+	// TODO: comment
+	system struct {
+		environ *environ
+		config  *Config
+		stdout  *os.File
+		stderr  *os.File
+		stdin   *os.File
+	}
+
+	// TODO: comment
 	runtime struct {
 		packages
 		globals *Table
-		config  *Config
-		thread  *thread
+		system  *system
 		values  *Table
+		main    *Thread
 		wait    sync.WaitGroup
 		types   [code.MaxType]*Table
 	}
 )
 
-func (rt *runtime) init(config *Config) *thread {
-	fr := &frame{call: &call{flag: mainfunc}}
-	ls := &thread{rt: rt, fr: fr}
+// TODO: comment
+func (rt *runtime) init(config *Config) *Thread {
+	ls := &thread{runtime: rt, hooks: new(hooks)}
 
 	rt.packages = packages{
 		searchers: NewTable(),
@@ -37,99 +57,208 @@ func (rt *runtime) init(config *Config) *thread {
 	}
 
 	rt.globals = NewTable()
-	rt.values = NewTable()
-	rt.thread = ls
+	rt.values  = NewTable()
+	rt.main    = &Thread{ls}
+	ls.thread  = rt.main
 	config.init(rt)
-
-	return ls
+ 
+	return ls.thread
 }
 
-func (rt *runtime) GoLoader(ls *Thread, file, name string) (Value, error) {
-	return rt.loader.load(ls, file, name)
+// TODO: comment
+func (rt *runtime) Registry() *Table { return rt.values }
+func (rt *runtime) Preload() *Table { return rt.preload }
+func (rt *runtime) Loaded() *Table { return rt.loaded }
+func (rt *runtime) Stdin() *os.File { return rt.system.stdin }
+func (rt *runtime) Stdout() *os.File { return rt.system.stdout }
+func (rt *runtime) Stderr() *os.File { return rt.system.stderr }
+
+// TODO: comment
+func (rt *runtime) PathVar(env string) Path {
+	switch env {
+		case GOLUAGO_ENV:
+			return Path(rt.system.environ.GOLUAGO)
+		case GOLUA_ENV:
+			return Path(rt.system.environ.GOLUA)
+	}
+	return ""
 }
 
-// func (rt *runtime) Searcher() Searcher { return nil }
-func (rt *runtime) Searchers() *Table { return rt.searchers }
-func (rt *runtime) Preload() *Table   { return rt.preload }
-func (rt *runtime) Globals() *Table   { return rt.globals }
-func (rt *runtime) Values() *Table    { return rt.values }
-func (rt *runtime) Loaded() *Table    { return rt.loaded }
-func (rt *runtime) Config() *Config   { return rt.config }
-
+// TODO: comment
 type thread struct {
-	// co *coroutine
-	rt *runtime
-	tt *Thread
-	fr *frame
+	runtime *runtime
+	thread  *Thread
+	hooks   *hooks
+	stack   []Value
+	calls   *call
+	callN   int
+	top     int
 }
 
-func (ls *thread) call(fn Value, args []Value, want int) ([]Value, error) {
-	if fn, ok := fn.(callable); ok {
-		ci := new(call).prepare(ls, fn, &args, want)
-		return ci.call(ls, args)
-	}
-	method := ls.meta(fn, "__call")
-	if method == nil {
-		return nil, fmt.Errorf("attempt to call a nil value")
-	}
-	return ls.call(method, append([]Value{fn}, args...), want)
-}
+// return lua.LoadBinary(fn.Thread(), "main.bin")
+// return lua.LoadScript(fn.Thread(), "main.lua")
+// return lua.LoadChunk(fn.Thread(), "main.lua")
 
-func (ls *thread) load(chunk *code.Chunk) *Func {
-	up := make([]*upvar, len(chunk.Main.UpVars))
-	up[0] = &upvar{value: ls.rt.globals}
-
-	fn := &Func{proto: chunk.Main}
-	fn.closure = closure{fn, up}
-	return fn
-}
-
-func (ls *thread) meta(value Value, event string) Value {
-	if v, ok := value.(HasMeta); ok {
-		if meta := v.Meta(); meta != nil {
-			return meta.Get(String(event))
+// callMeta calls a metamethod.
+//
+// If the object has a metatable and this metatable has field, this
+// function calls this field passing the object as its only argument.
+//
+// In this case this function returns the value returned by the call,
+// true, and the error (if any).
+//
+// If there is no metatable or no metamethod, this function returns
+// nil, false, and nil.
+func (ls *thread) callMeta(object Value, field string) (Value, bool, error) {
+	if method := ls.typeOf(object).Field(field); method != nil {
+		rets, err := ls.callE(method, []Value{object}, 1)
+		if err != nil {
+			return nil, true, err
 		}
+		return rets[0], true, nil
 	}
-	if value != nil {
-		meta := ls.rt.types[0x0F&value.kind()]
-		if meta != nil {
-			return meta.Get(String(event))
+	return nil, false, nil
+}
+
+func (ls *thread) recover(err *error) {
+	// type formatter interface {
+	// 	format(*Thread) error
+	// }
+	if r := recover(); r != nil {
+		if e, ok := r.(error); ok {
+			*err = e
+			return
 		}
+		panic(r)
+		// switch e := r.(type) {
+		// 	case formatter:
+		// 		*err = e.format(ls.thread)
+		// 	case error:
+		// 		*err = e
+		// 	default:
+		// 		panic(r)
+		// }
+	}
+}
+
+func (ls *thread) callE(fv Value, args []Value, retc int) (rets []Value, err error) {
+	defer ls.recover(&err)
+	rets = ls.call(fv, args, retc)
+	return rets, err
+}
+
+func (ls *thread) call(fv Value, args []Value, retc int) []Value {
+	ls.push(append([]Value{fv}, args...)...)
+	ci := ls.cont(ls.top-len(args)-1, retc)
+	if ls.do(ci); ci.err != nil {
+		panic(ci.err)
+	}
+	return ls.stack[:ls.top]
+}
+
+func (ls *thread) cont(fnID, retc int) *call {
+	if fn, ok := ls.stack[fnID].(callable); ok {
+		return fn.cont(ls, fnID, retc)
+	}
+	return ls.funcTM(fnID).cont(fnID, retc)
+}
+
+// TODO: comment
+func (ls *thread) meta(v Value, event string) Value {
+	if v != nil {
+		return ls.typeOf(v).Field(event)
 	}
 	return nil
 }
 
-func (ls *thread) typeOf(v Value) *rtype {
-	if m, ok := v.(HasMeta); ok {
-		return &rtype{m.Meta(), v}
+// TODO: comment
+func (ls *thread) funcTM(fnID int) *thread {
+	if mm := ls.meta(ls.stack[fnID], "__call"); mm != nil {
+		if _, ok := mm.(callable); ok {
+			ls.insert(fnID, mm)
+			return ls
+		}
+	}
+	panic(opError(ls, _call, &(ls.stack[fnID]), nil))
+}
+
+// TODO: comment
+func (ls *thread) typeOf(v Value) *meta {
+	switch v := v.(type) {
+		case *GoValue:
+			return &meta{v.Meta, v}
+		case *Table:
+			return &meta{v.meta, v}
+		default:
+			if v == nil {
+				return nilMeta
+			}
+			mt := ls.runtime.types[0x0F&v.kind()]
+			return &meta{mt, v}
+	}
+}
+
+// TODO: comment
+func (ls *thread) setMeta(v Value, m *Table) {
+	if o, ok := v.(hasMeta); ok {
+		o.setMeta(m)
+		return
 	}
 	if v != nil {
-		meta := ls.rt.types[0x0F&v.kind()]
-		return &rtype{meta, v}
+		ls.runtime.types[0x0F&v.kind()] = m
 	}
+}
+
+func (ls *thread) caller(skip int) (ci *call) {
+	// for ci = ls.calls; skip > 0; ci = ci.prev {
+	// 	skip--
+	// }
+	// return ci
 	return nil
 }
 
-func (ls *thread) error(err error) error {
-	if err == nil {
-		return nil
-	}
-	fmt.Printf("%T\n", err)
-	return err
-}
+// func (ls *thread) traceback(skip int) (stack []*frame) {
+// 	for fr := ls.caller(skip); fr != nil; fr = ls.caller(skip) {
+// 		stack = append(stack, fr)
+// 		skip++
+// 	}
+// 	return stack
 
-func (ls *thread) caller(skip int) *call {
-	var (
-		fr, ci = ls.fr, ls.fr.call
-	)
+	// var b strings.Builder
+	// fmt.Fprint(&b, "stack traceback:")
+	// for fp := fr; fp != nil && (fp.call.flag & mainfunc == 0); fp = fp.prev {
+	// 	dbg := fp.debug("Slnt")
+	// 	fmt.Fprintf(&b, "\n\t%s:", dbg.short)
+	// 	if dbg.line > 0 {
+	// 		fmt.Fprintf(&b, "%d:", dbg.line)
+	// 	}
+	// 	// add global function name if necessary
+	// 	var name string
+	// 	if name = funcNameFromGlobals(fp, dbg); name != "" {
+	// 		name = fmt.Sprintf("function '%s'", name)
+	// 	} else {
+	// 		switch {
+	// 			case dbg.what != "":
+	// 				name = fmt.Sprintf("%s '%s'", dbg.what, dbg.name)
+	// 			case dbg.kind == "main":
+	// 				name = "main chunk"
+	// 			case dbg.kind != "Go":
+	// 				name = fmt.Sprintf("function <%s:%d>", dbg.short, dbg.span[0])
+	// 			default:
+	// 				name = "?"
+	// 		}
+	// 	}
+	// 	fmt.Fprintf(&b, " in %s", name)
+	// 	if dbg.tailcall {
+	// 		fmt.Fprintf(&b, "\n\t(...tail calls...)")
+	// 	}
+	// }
+	// fmt.Fprint(&b, "\n\t[Go]: in ?")
+	// return b.String()
+	// for _, fr := range fr.traceback() {
+	// 	stack = append(stack, fr.debug("Slnt"))
+	// }
+	// return stack
+// }
 
-	for skip > 0 && (ci.flag&mainfunc == 0) {
-		fr = fr.prev
-		ci = fr.call
-		skip--
-	}
-	if skip == 0 && (ci.flag&mainfunc == 0) {
-		return ci
-	}
-	return nil
-}
+var nilMeta = new(meta)

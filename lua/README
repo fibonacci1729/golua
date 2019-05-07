@@ -1,0 +1,186 @@
+
+type Chunker interface {
+	Load(LoadMode) (*Func, error)
+	
+}
+
+func (thread *Thread) ExecN(chunk Chunker, args []Value, want int) ([]Value, error) {
+	// ...
+}
+
+func (thread *Thread) Exec(chunk Chunker, args ...Value) ([]Value, error) {
+	// ...	
+}
+
+thread.Exec(lua.Path("main.lua"))
+
+lua.Library("mylib", 
+
+type (
+	Scripter interface {
+		DoFileWithEnvN(file string, args []Value, want int, env *Table) ([]Value, error)
+		DoFileWithEnv(file string, args []Value, env *Table) ([]Value, error)
+		DoFileN(file string, args []Value, want int) ([]Value, error)
+		DoFile(file string, args ...Value) ([]Value, error)
+
+		DoTextWithEnvN(text string, args []Value, want int, env *Table) ([]Value, error)
+		DoTextWithEnv(text string, args []Value, env *Table) ([]Value, error)
+		DoTextN(text string, args []Value, want int) ([]Value, error)
+		DoText(text string, args ...Value) ([]Value, error)
+		DoLibrary(name string) error
+	}
+
+	Loader interface {
+		LoadWithEnv(file string, src interface{}, mode LoadMode, env *Table) (*Func, error)
+		LoadFrom(from io.Reader, mode LoadMode) (*Func, error)
+		LoadFile(file string, mode LoadMode) (*Func, error)
+		LoadText(text string) (*Func, error)
+		Load(file string, src interface{}, mode LoadMode) (*Func, error)
+	}
+
+	Execer interface {
+		ExecWithEnvN(file string, src interface{}, args []Value, want int, env *Table) ([]Value, error)
+		ExecWithEnv(file string, src interface{}, args []Value, env *Table) ([]Value, error)
+		ExecN(file string, src interface{}, args []Value, want int) ([]Value, error)
+		Exec(file string, src interface{}, args ...Value) ([]Value, error)
+	}
+
+	Caller interface {
+		PCallN(fv Value, args []Value, want int) ([]Value, error)
+		PCall1(fv Value, args ...Value) (Value, error)
+		PCall0(fv Value, args ...Value) error
+		PCall(fv Value, args ...Value) ([]Value, error)
+		CallN(fv Value, args []Value, want int) []Value
+		Call1(fv Value, args ...Value) Value
+		Call(fv Value, args ...Value) []Value
+	}
+
+	Typer interface {
+		CallMeta(object Value, field string) (Value, bool, error)
+		TypeOf(obj Value) Type { return ls.typeOf(obj)
+		SetMeta(v Value, meta *Table) Value
+		NewMeta(name string) *Table
+		Meta(name string) *Table
+	}
+
+	Debugger interface {
+		Callers(skip int) (stack []Frame)
+		Caller(skip int) Frame
+		Traceback() StackTrace
+		Hooks() Hooks
+	}
+
+	Moduler interface {
+		Require(module Module) (Value, error)
+		Preload(module Module)
+		Import(module Module) error
+	}
+
+	Runtime interface {
+		Scripter
+		Debugger
+		Moduler
+		Loader
+		Execer
+		Typer
+
+		SetGlobal(name string, global Value) *Thread
+		SetGlobals(env *Table)
+		Global(name string) Value
+		Globals() *Table
+
+		Errorf(format string, args ...interface{})
+		Error(obj Value)
+		ErrorAt(obj Value, level int)
+
+		Preloaded() *Table
+		Register() *Table
+		Loaded() *Table
+	}
+
+	Thread interface {
+		Runtime
+		Value
+
+		IsMainThread() bool
+	}
+)
+
+
+type (
+	thread struct {
+		stack
+		calls *call
+		callN int
+	}
+
+	call struct {
+		flag callstatus
+		prev *call
+		next *call
+		fnID int
+		base int
+		retc int
+		top  int
+		err  error
+		ls   *thread
+	}
+)
+
+// 
+// [... (N) ... func 1 2] -- func=N+1 top=N+3
+
+func (fn *GoFunc) cont(ls *thread, args []Value, retc int) *call {
+	stk := ls.stack.push(append([]Value{fn}, args...)...).check(MIN_STACK)
+	
+	ci := ls.next()
+	ci.retc = retc
+	ci.fnID = stk.top - len(args)
+	ci.top  = stk.top + MIN_STACK
+	return ci
+}
+
+func (fn *Func) cont(ls *thread, args []Value, retc int) *call {
+	stk := ls.stack.push(append([]Value{fn}, args...)...).check(fn.proto.StackN)
+
+	var (
+		fnID = stk.top - len(args)
+		argc = stk.top - fnID - 1
+		base int
+	)
+	if fn.proto.Vararg {
+		base = fn.varargs(argc)
+	} else {
+		for argc < fn.proto.ParamN {
+			stk.push(nil)
+			argc++
+		}
+		base = fnID + 1
+	}
+
+	ci := ls.next()
+	ci.fnID = fnID
+	ci.base = base
+	ci.retc = retc
+	ci.flag = luacall
+	ci.top  = base + fn.proto.StackN
+	return ci
+}
+
+func (ls *thread) cont(fn Value, args []Value, retc int) *call {
+	if fn, ok := fn.(callable); ok {
+		return fn.cont(ls, args, retc)
+	}
+	return ls.cont(ls.funcTM(fn, &args), args, retc)
+}
+
+func (ls *thread) call(fv Value, args []Value, retc int) *call {
+	for ci := ls.cont(fn, args, retc); ci.next != nil && ci.err != nil {
+		ci = ci.next
+	}
+	return ci
+}
+
+func (ls *thread) next() (ci *call) {
+
+}

@@ -2,12 +2,10 @@ package lua
 
 import "fmt"
 
-var _ = fmt.Println
-
 type event int
 
 const (
-	_index event = iota
+	_index 	event = iota
 	_newindex
 	_gc
 	_mode
@@ -63,48 +61,123 @@ var events = [...]string{
 
 func (evt event) String() string { return "__" + events[evt] }
 
-func (evt event) compare(ls *thread, x, y Value) (v Value, err error) {
-	if fn, ok := ls.meta(x, evt.String()).(callable); ok {
-		rets, err := ls.call(fn.(Value), []Value{x, y}, 1)
-		if err != nil {
-			return nil, err
+func callBinaryMeta(ls *thread, method event, x, y *Value) (ret Value, ok bool, err error) {
+	if ls != nil {
+		if fn := ls.meta(*x, method.String()); fn != nil { // try 1st operand
+			rets, err := ls.callE(fn, []Value{*x, *y}, 1)
+			if err != nil {
+				return nil, true, err
+			}
+			return rets[0], true, nil
 		}
-		return rets[0], nil
-	}
-	if fn, ok := ls.meta(y, evt.String()).(callable); ok {
-		rets, err := ls.call(fn.(Value), []Value{x, y}, 1)
-		if err != nil {
-			return nil, err
+		if fn := ls.meta(*y, method.String()); fn != nil { // try 2nd operand
+			rets, err := ls.callE(fn, []Value{*x, *y}, 1)
+			if err != nil {
+				return nil, true, err
+			}
+			return rets[0], true, nil
 		}
-		return rets[0], nil
 	}
-	return nil, fmt.Errorf("compare meta-event: todo!")
+	return nil, false, nil
 }
 
-func (evt event) binary(ls *thread, x, y Value) (v Value, err error) {
-	// if fn, ok := ls.meta(x, evt.String()).(callable); ok {
-	// 	rets, err := ls.pcall(fn, stack{x, y}, 1)
-	// 	if err == nil {
-	// 		return rets[0]
-	// 	}
-	// }
-	// if fn, ok := ls.meta(y, evt.String()).(callable); ok {
-	// 	rets, err := ls.pcall(fn, stack{x, y}, 1)
-	// 	if err == nil {
-	// 		return rets[0]
-	// 	}
-	// }
-	// ls.error(&evalErr{evt, x, y})
-	// panic("unreachable")
+func tryBinaryMeta(ls *thread, method event, x, y *Value) (Value, error) {
+	v, ok, err := callBinaryMeta(ls, method, x, y)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, opError(ls, method, x, y)
+	}
+	return v, nil
+}
 
-	// if method := ls.meta(x, evt.String()); method != nil { // try 1st operand
-	// 	return evt.call(ls, method, x, y, true)
-	// }
-	// if method := ls.meta(y, evt.String()); method != nil { // try 2nd operand
-	// 	return evt.call(ls, method, x, y, true)
-	// }
-	// func (evt event) call(ls *State, fn, arg1, arg2 lua.Value, hasResult bool) (lua.Value, error) {
-	// 	return nil, fmt.Errorf("%s.call(%v, %v, %v) (result = %t)\n", fn, arg1, arg2, hasResult)
-	// }
-	return nil, fmt.Errorf("binary meta-event: todo!")
+func tryCompareMeta(ls *thread, method event, x, y *Value) (bool, error) {
+	v, ok, err := callBinaryMeta(ls, method, x, y)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, opError(ls, method, x, y)
+	}
+	return Truth(v), nil
+}
+
+func tryUnaryMeta(ls *thread, method event, x *Value) (Value, error) {
+	v, ok, err := callBinaryMeta(ls, method, x, x)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, opError(ls, method, x, nil)
+	}
+	return v, nil
+}
+
+func opError(ls *thread, op event, v1, v2 *Value) error {
+	var (
+		call = ls.calls
+		msg string
+		obj *Value
+	)
+	switch op {
+		case _bnot, _band, _bxor, _bor, _shl, _shr:
+			if AsNumber(*v1) != nil && AsNumber(*v2) != nil {
+				if _, ok := AsInt(*v1); ok {
+					obj = v1
+				} else {
+					obj = v2
+				}
+				return fmt.Errorf(
+					"number%s has no integer representation",
+					call.varinfo(obj),
+				)
+			}
+			obj, msg = v2, "perform bitwise operation on"
+			if AsNumber(*v1) == nil {
+				obj = v1
+			}
+		case _eq, _lt, _le:
+			var (
+				o1 = objectTypeName(*v1)
+				o2 = objectTypeName(*v2)
+			)
+			if o1 == o2 {
+				return fmt.Errorf("attempt to compare two %s values", o1)
+			}
+			return fmt.Errorf("attempt to compare %s with %s", o1, o2)
+		case _concat:
+			if obj, msg = v1, "concatenate"; IsString(*obj) || IsNumber(*obj) {
+				obj = v2
+			}
+		case _call:
+			obj, msg = v1, "call"
+		case _len:
+			obj, msg = v1, "get length of"
+		default:
+			obj, msg = v2, "perform arithmetic on"
+			if AsNumber(*v1) == nil {
+				obj = v1
+			}
+	}
+	return call.errorf("attempt to %s a %s value %s", msg, objectTypeName(*obj), call.varinfo(obj))
+}
+
+func objectTypeName(obj Value) string {
+	if o, ok := obj.(hasMeta); ok {
+		if m := o.getMeta(); m != nil {
+			s, ok := m.Get(String("__name")).(String)
+			if ok {
+				return string(s)
+			}
+		}
+	}
+	return typeName(obj)
+}
+
+func typeName(v Value) string {
+	if v == nil {
+		return "nil"
+	}
+	return v.kind().String()
 }

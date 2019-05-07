@@ -1,21 +1,20 @@
 package lua
 
 import (
+	goruntime "runtime"
+	"path/filepath"
+	"reflect"
 	"fmt"
-
+	"io"
 	"github.com/Azure/golua/lua/code"
 )
 
 type (
-	Function interface {
-		Callable
-		// Info() Debug
-		// Up(int) Value
-	}
-
 	// callable is implemented by all values that are callable: *GoFunc / *Func.
 	callable interface {
-		call(*thread, []Value) ([]Value, error)
+		cont(*thread, int, int) *call
+		info(*call) *FuncInfo
+		call(*thread)
 	}
 
 	// closure represents a Lua/Go closure.
@@ -26,28 +25,35 @@ type (
 
 	// upvar represents a Lua upvalue.
 	upvar struct {
-		value Value
-		index int
-		open  bool
-		next  *upvar
+		stack  *Value
+		value  Value
+		index  int
+		isopen bool
 	}
 )
 
+// TODO: comment
+func (up *upvar) close() {
+	if up.isopen {
+		final := up.get()
+		up.isopen = false
+		up.set(final)
+	}
+}
+
 // set the upvalue's inner value.
 func (up *upvar) set(v Value) {
-	if up.open {
-		// (*up.stack)[up.level] = v
-		// return
-		panic("upvar.set: open!")
+	if up.isopen {
+		*(up.stack) = v
+		return
 	}
 	up.value = v
 }
 
 // get the upvalue's inner value.
 func (up *upvar) get() Value {
-	if up.open {
-		// return (*up.stack)[up.level]
-		panic("upvar.get: open!")
+	if up.isopen {
+		return *(up.stack)
 	}
 	return up.value
 }
@@ -57,105 +63,243 @@ func (cls *closure) String() string {
 	return fmt.Sprintf("function: %p", cls.fn)
 }
 
+// Up returns the closures n'th upvalue.
+func (cls closure) Up(n int) Value {
+	if n >= 0 && n < len(cls.up) {
+		if up := cls.up[n]; up != nil {
+			return up.get()
+		}
+	}
+	return nil
+}
+
+// asClosure returns the closure for the callable value.
+func asClosure(fn callable) *closure {
+	switch fn := fn.(type) {
+		case *GoFunc:
+			return &fn.closure
+		case *Func:
+			return &fn.closure
+	}
+	return nil
+}
+
 // GoFunc represents a Go builtin function value.
 type GoFunc struct {
 	closure
 	name string
-	args argsCheck
-	impl func(*Thread, Tuple) ([]Value, error)
+	// impl func(*Thread, GoCont) Continuation
+	impl func(Continuation) []Value
+	//impl func(*Thread, []Value) []Value
 }
 
-// NewGoFunc creates and returns a new *GoFunc.
-func NewGoFunc(name string, impl func(*Thread, Tuple) ([]Value, error), vars ...Value) *GoFunc {
-	fn := Closure(impl, vars...)
-	fn.name = name
-	return fn
+// NewGoFunc creates and returns a new *Builtin.
+func NewGoFunc(name string, impl func(Continuation) []Value) *GoFunc {
+	return Closure(&GoFunc{name: name, impl: impl}).(*GoFunc)
 }
 
-func Closure(impl func(*Thread, Tuple) ([]Value, error), vars ...Value) *GoFunc {
-	fn := &GoFunc{impl: impl}
+// GoClosure is a convenience for creating Go functions.
+// func GoClosure(impl func(*Thread, GoCont) Continuation, vars ...Value) Callable {
+func GoClosure(impl func(Continuation) []Value, vars ...Value) *GoFunc {
+	return Closure(NewGoFunc("", impl), vars...).(*GoFunc)
+}
+
+// TODO: comment
+func Closure(fn Callable, vars ...Value) Callable {
 	up := make([]*upvar, len(vars))
 	for i, v := range vars {
 		up[i] = &upvar{value: v}
 	}
-	fn.closure = closure{fn, up}
-	return fn
+	switch fn := fn.(type) {
+		case *GoFunc:
+			fn.closure = closure{fn, up}
+			return fn
+		case *Func:
+			fn.closure = closure{fn, up}
+			return fn
+	}
+	return nil
 }
 
-func (fn *GoFunc) check(ls *thread, argv []Value) (args Tuple, err error) {
-	if args = Tuple(argv); fn.args != nil {
-		if err = args.Check(ls.tt, fn.args); err != nil {
-			return nil, err
+// TODO: comment
+func (fn *GoFunc) detail() string {
+	pointer := reflect.ValueOf(fn.impl).Pointer()
+	details := goruntime.FuncForPC(pointer)
+	file, line := details.FileLine(details.Entry())
+	extra := filepath.Join(filepath.Dir(file), details.Name())
+	return fmt.Sprintf("%s:%d", extra, line)
+}
+
+// TODO: comment
+func (fn *GoFunc) cont(ls *thread, fnID, retc int) *call {
+	ci := &call{prev: ls.calls, ls: ls}
+	ci.top  = ls.top
+	ci.fn   = fn
+	ci.retc = retc
+	ci.fnID = fnID
+	ci.base = fnID + 1
+	return ci
+}
+
+// TODO: comment
+func (fn *GoFunc) info(ci *call) *FuncInfo {
+	var (
+		name, what string
+		caller = ci.prev
+	)
+	if caller != nil && caller.isLua() && (ci.flag & tailcall == 0) {
+		if name, what = funcNameFromCode(caller); what == "" {
+			name = ""
 		}
 	}
-	return args, nil
+	return &FuncInfo{
+		Source:  "=[Go]",
+		Short:   "[Go]",
+		Name:    name,
+		What:    what,
+		Kind:    "Go",
+		ParamN:  0,
+		UpVarN:  len(fn.up),
+		LineDef: -1,
+		LineEnd: -1,
+		Vararg:  true,
+	}
 }
 
-// call implements the callable interface for Go funcs.
-func (fn *GoFunc) call(ls *thread, argv []Value) ([]Value, error) {
-	args, err := fn.check(ls, argv)
-	if err != nil {
-		return nil, err
-	}
-	return fn.impl(ls.tt, args)
+// TODO: comment
+func (fn *GoFunc) call(ls *thread) {
+	call, rets := ls.calls, fn.impl(ls)
+	ls.push(rets...).returns(call, ls.top-len(rets), len(rets))
 }
 
 // A Func represents a Lua function value.
 type Func struct {
 	closure
-	stack []Value
 	proto *code.Proto
 }
 
-// call implements the callable interface for Lua funcs.
-func (fn *Func) call(ls *thread, args []Value) ([]Value, error) {
-	// fmt.Printf("call: args=%v, varg=%v\n", args, ls.fr.call.va)
-	// fn.stack = append(fn.stack, args)
-	for i, arg := range args {
-		fn.stack[i] = arg
+// NewFunc returns a new function value for the compiled Lua chunk
+// populating its first upvalue with env.
+func NewFunc(chunk *code.Chunk, env *Table) *Func {
+	var (
+		fn = &Func{proto: chunk.Main}
+		up []Value
+	)
+	if upN := len(fn.proto.UpVars); upN > 0 {
+		up = make([]Value, upN)
+		up[0] = env
 	}
-	return ls.exec(fn)
+	return Closure(fn, up...).(*Func)
 }
 
-// kst returns the function i'th constant.
-func (fn *Func) kst(i int) (c Constant) {
-	switch kst := fn.proto.Consts[i].(type) {
-	case float64:
-		return Float(kst)
-	case string:
-		return String(kst)
-	case int64:
-		return Int(kst)
-	case bool:
-		if kst {
-			return True
+// CallN calls the Lua value fv with args returning want results.
+//
+// Returns #want results or error.
+// func (fn *Func) CallN(ls *Thread, args []Value, want int) ([]Value, error) {}
+
+// Call1 calls the Lua value fv with args returning want results.
+//
+// Returns 1 result or error.
+// func (fn *Func) Call1(ls *Thread, args ...Value) (Value, error) {}
+
+// Call0 calls the Lua value fv with args.
+//
+// Returns the error if any.
+// func (fn *Func) Call0(ls *Thread, args ...Value) error {}
+
+// Call implements the Callable interface.
+//
+// Call calls the Lua function with args
+// returning all results or error (if any).
+// func (fn *Func) Call(ls *Thread, args ...Value) ([]Value, error) {}
+
+// TODO: comment
+// func (fn *Func) Cont(ls *Thread, next Continuation) Continuation {
+// 	return nil
+// }
+
+// Dump dumps a function as a binary chunk.
+//
+// If strip is true, the binary representation may not
+// include all debug information about the function,
+func (fn *Func) Dump(w io.Writer, strip bool) (int, error) {
+	return code.Dump(w, fn.proto, strip)
+}
+
+// TODO: comment
+func (fn *Func) cont(ls *thread, fnID, retc int) *call {
+	ls.check(fn.proto.StackN)
+	var ( 
+		argc = (ls.top - fnID) - 1
+		base int
+	)
+	if fn.proto.Vararg {
+		var (
+			fixed = fn.proto.ParamN
+			first = ls.top - argc
+			param int
+		)
+		base = ls.top
+		for param < fixed && param < argc {
+			ls.stack[ls.top] = ls.stack[first+param]
+			ls.stack[first+param] = nil
+			ls.top++
+			param++
 		}
-		return False
+		for param < fixed {
+			ls.stack[ls.top] = nil
+			ls.top++
+			param++
+		}
+	} else {
+		for argc < fn.proto.ParamN {
+			ls.stack[ls.top] = nil
+			ls.top++
+			argc++
+		}
+		base = fnID + 1
 	}
-	return c
+	ci := &call{prev: ls.calls, ls: ls}
+	ci.top  = base + fn.proto.StackN
+	ls.top  = ci.top
+	ci.fn   = fn
+	ci.fnID = fnID
+	ci.base = base
+	ci.retc = retc
+	ci.flag = luacall
+	return ci
 }
 
-// rk returns the i'th stack value or the i'th constant if
-// 'i' is a constant index.
-func (fn *Func) rk(i int) Value {
-	if code.IsKst(i) {
-		return fn.kst(code.ToKst(i))
-	}
-	return fn.stack[i]
-}
+// TODO: comment
+func (fn *Func) call(ls *thread) { execute(ls) }
 
+// func (fn *Func) run(fs *function) (Continuation, error) {
+// 	fmt.Println("*Func.run!")
+// 	return nil, nil
+// }
+
+// TODO: comment
 func (fn *Func) close(level int) {
-	fmt.Println("close!")
+	for _, up := range fn.up {
+		if up.index >= level {
+			up.close()
+		}
+	}
 }
 
-func (fn *Func) open(stack []Value, encup ...*upvar) {
+// TODO: comment
+func (fn *Func) open(ls *thread, encup ...*upvar) {
 	cls := closure{fn: fn, up: make([]*upvar, len(fn.proto.UpVars))}
 	fn.closure = cls
 	for i, up := range fn.proto.UpVars {
 		if up.Stack {
 			// upvalue refers to local variable
-			// cls.up[i] = stack[up.Index]
-			panic("open: up in stack!")
+			instack := ls.stack[up.Index]
+			cls.up[i] = &upvar{
+				stack:  &instack,
+				index:  up.Index,
+				isopen: true,
+			}
 		} else {
 			// upvalue is in enclosing function
 			cls.up[i] = encup[up.Index]
@@ -163,9 +307,61 @@ func (fn *Func) open(stack []Value, encup ...*upvar) {
 	}
 }
 
-func (fn *Func) checkstack(top, n int) {
-	if room := len(fn.stack) - top; room < n {
-		space := make([]Value, n-room)
-		fn.stack = append(fn.stack, space...)
+// TODO: comment
+func (fn *Func) info(ci *call) *FuncInfo {
+	var (
+		name, what string
+		caller = ci.prev
+		proto  = fn.proto
+	)
+	if caller != nil && caller.isLua() && (ci.flag & tailcall == 0) {
+		if name, what = funcNameFromCode(caller); what == "" {
+			name = ""
+		}
 	}
+	var ( source, short, kind string )
+	if source = proto.Source; source == "" {
+		source = "=?"
+	}
+	short = chunkID(source)
+	if kind = "Lua"; proto.SrcPos == 0 {
+		kind = "main"
+	}
+	line := -1
+	if proto.PcLine != nil {
+		line = int(proto.PcLine[ci.pc-1])
+	}
+	return &FuncInfo{
+		Source:   source,
+		Short:    short,
+		Name:     name,
+		What:     what,
+		Kind:     kind,
+		Lines:    nil,
+		ParamN:   proto.ParamN,
+		UpVarN:   len(fn.up),
+		AtLine:   line,
+		LineDef:  proto.SrcPos,
+		LineEnd:  proto.EndPos,
+		Vararg:   proto.Vararg,
+		Tailcall: (ci.flag & tailcall != 0),
+	}
+}
+
+// kst returns the function's i'th constant.
+func (fn *Func) kst(i int) (c Constant) {
+	switch kst := fn.proto.Consts[i].(type) {
+		case float64:
+			return Float(kst)
+		case string:
+			return String(kst)
+		case int64:
+			return Int(kst)
+		case bool:
+			if kst {
+				return True
+			}
+			return False
+	}
+	return c
 }

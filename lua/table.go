@@ -25,6 +25,14 @@ type entry struct {
 	next  Value
 }
 
+func NewTableFromSlice(vals ...Value) *Table {
+	t := NewTableSize(len(vals), 0)
+	for i, v := range vals {
+		t.Set(Int(i+1), v)
+	}
+	return t
+}
+
 func NewTableFromMap(kvs map[string]Value) *Table {
 	t := NewTableSize(0, len(kvs))
 	for k, v := range kvs {
@@ -39,9 +47,16 @@ func NewTableSize(arrN, kvsN int) *Table {
 
 func NewTable() *Table { return NewTableSize(0, 0) }
 
-func (t *Table) String() string      { return fmt.Sprintf("table: %p", t) }
-func (t *Table) SetMeta(meta *Table) { t.meta = meta }
-func (t *Table) Meta() *Table        { return t.meta }
+func (t *Table) SetFuncs(funcs ...*GoFunc) *Table {
+	for _, fn := range funcs {
+		if name := fn.name; name != "" {
+			t.Set(String(name), fn)
+		}
+	}
+	return t
+}
+
+func (t *Table) String() string { return fmt.Sprintf("table: %p", t) }
 
 func (t *Table) Slice() (slice []Value) {
 	var (
@@ -78,14 +93,14 @@ func (t *Table) Next(key Value) (k, v Value, ok bool) {
 
 func (t *Table) Length() Int {
 	switch t.flag {
-	case borderDown:
-		for t.seqN > 0 && t.kvs[t.seqN].value == nil {
-			t.seqN--
-		}
-	case borderUp:
-		for t.kvs[t.seqN+1].value != nil {
-			t.seqN++
-		}
+		case borderDown:
+			for t.seqN > 0 && t.kvs[t.seqN].value == nil {
+				t.seqN--
+			}
+		case borderUp:
+			for t.kvs[t.seqN+1].value != nil {
+				t.seqN++
+			}
 	}
 	t.flag = borderOk
 	return t.seqN
@@ -102,27 +117,27 @@ func (t *Table) Get(k Value) Value {
 
 func (t *Table) Set(k, v Value) {
 	switch k := k.(type) {
-	case Float:
-		if i := Int(k); Float(i) == k {
-			t.setInt(i, v)
-			return
-		}
-		t.set(k, v)
-	case Int:
-		t.setInt(k, v)
-	default:
-		t.set(k, v)
+		case Float:
+			if i := Int(k); Float(i) == k {
+				t.setInt(i, v)
+				return
+			}
+			t.set(k, v)
+		case Int:
+			t.setInt(k, v)
+		default:
+			t.set(k, v)
 	}
 }
 
 func (t *Table) setInt(k Int, v Value) {
 	switch {
-	case v == nil && t.seqN > 0 && k == t.seqN:
-		t.flag = borderDown
-		t.seqN--
-	case k > t.seqN && v != nil:
-		t.flag = borderUp
-		t.seqN = k
+		case v == nil && t.seqN > 0 && k == t.seqN:
+			t.flag = borderDown
+			t.seqN--
+		case k > t.seqN && v != nil:
+			t.flag = borderUp
+			t.seqN = k
 	}
 	t.set(k, v)
 }
@@ -140,6 +155,9 @@ func (t *Table) set(k, v Value) {
 	t.kvs[k] = entry
 }
 
+func (t *Table) setMeta(meta *Table) { t.meta = meta }
+func (t *Table) getMeta() *Table { return t.meta }
+
 func (t *Table) foreach(fn func(k, v Value) bool) {
 	for k, v, ok := t.Next(nil); k != nil && ok; {
 		if !fn(k, v) {
@@ -155,5 +173,5 @@ func fb2int(x int) int {
 	if e == 0 {
 		return x
 	}
-	return ((x & 7) + 8) << uint(e-1)
+	return ((x & 7) + 8) << uint(e - 1)
 }

@@ -1,20 +1,12 @@
 package luac
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/Azure/golua/lua/code"
 )
 
-var _ = fmt.Println
-var _ = os.Exit
+const EnvID = "_ENV"
 
-var Defaults = &Config{}
-
-type Config struct{}
-
-func Compile(config *Config, file string, src interface{}) (chunk *code.Chunk, err error) {
+func Compile(file string, src interface{}) (chunk *code.Chunk, err error) {
 	defer func(err *error) {
 		if r := recover(); r != nil {
 			if e, ok := r.(code.Error); ok {
@@ -30,8 +22,8 @@ func Compile(config *Config, file string, src interface{}) (chunk *code.Chunk, e
 	return &code.Chunk{fn}, err
 }
 
-func Bundle(config *Config, files []string) (*code.Chunk, error) {
-	bundle := &code.Proto{
+func Bundle(files []string) (*code.Chunk, error) {
+    bundle := &code.Proto{
 		UpVars: []*code.UpVar{
 			&code.UpVar{
 				Name:  "_ENV",
@@ -39,23 +31,23 @@ func Bundle(config *Config, files []string) (*code.Chunk, error) {
 				Index: 0,
 			},
 		},
-		Source: "=(glua)",
+		Source: "=(golua)",
 		Vararg: true,
 		StackN: 2,
 	}
 	if len(files) == 1 {
-		return Compile(config, "@"+files[0], nil)
+		return Compile("@"+files[0], nil)
 	}
-	for _, file := range files {
-		fn, err := Compile(config, "@"+file, nil)
+    for _, file := range files {
+    	fn, err := Compile("@"+file, nil)
 		if err != nil {
 			return nil, err
 		}
-		if len(fn.Main.UpVars) > 0 {
-			fn.Main.UpVars[0].Stack = false
-		}
-		bundle.Protos = append(bundle.Protos, fn.Main)
-	}
+        if len(fn.Main.UpVars) > 0 {
+            fn.Main.UpVars[0].Stack = false
+        }
+        bundle.Protos = append(bundle.Protos, fn.Main)
+    }
 	for pc := 0; pc < len(bundle.Protos); pc++ {
 		bundle.Instrs = append(bundle.Instrs,
 			code.MakeABx(code.CLOSURE, 0, pc),

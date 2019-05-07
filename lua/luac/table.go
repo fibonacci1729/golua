@@ -1,20 +1,14 @@
 package luac
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/Azure/golua/lua/code"
 )
-
-var _ = fmt.Println
-var _ = os.Exit
 
 type constructor struct {
 	pending int   // number of array elements pending to be stored
 	nh, na  int   // total number of 'record' / 'array' elements
-	v       expr  // last list item read
-	t       *expr // table descriptor
+	v 	    expr  // last list item read
+	t 	    *expr // table descriptor
 }
 
 // constructor -> '{' [ field { sep field } [sep] ] '}' sep -> ',' | ';
@@ -22,8 +16,8 @@ func (p *parser) constructor(ls *lexical, e *expr) {
 	pc := ls.fs.code.codeABC(ls.fs, code.NEWTABLE, 0, 0, 0)
 	cc := &constructor{t: e}
 	line := ls.line
-	cc.t.init(vreloc, pc)
-	cc.v.init(vvoid, 0)               // no value (yet)
+	cc.t.init(vreloc, pc) 
+	cc.v.init(vvoid, 0) // no value (yet)
 	ls.fs.code.expr2next(ls.fs, cc.t) // fix it at stack top
 	ls.expect('{')
 	ls.next()
@@ -47,16 +41,16 @@ func (p *parser) constructor(ls *lexical, e *expr) {
 // field -> listfield | recfield
 func (p *parser) field(ls *lexical, cc *constructor) {
 	switch ls.token.char {
-	case tName: // may be 'listfield' or 'recfield'
-		if ls.peek() != '=' { // expression?
-			p.listField(ls, cc)
-		} else {
+		case tName: // may be 'listfield' or 'recfield'
+			if ls.peek() != '=' { // expression?
+				p.listField(ls, cc)
+			} else {
+				p.hashField(ls, cc)
+			}
+		case '[':
 			p.hashField(ls, cc)
-		}
-	case '[':
-		p.hashField(ls, cc)
-	default:
-		p.listField(ls, cc)
+		default:
+			p.listField(ls, cc)
 	}
 }
 
@@ -71,9 +65,7 @@ func (p *parser) listField(ls *lexical, cc *constructor) {
 // recfield -> (NAME | '['exp1']') = exp1
 func (p *parser) hashField(ls *lexical, cc *constructor) {
 	register := ls.fs.free
-	var (
-		k, v expr
-	)
+	var ( k, v expr )
 	if ls.token.char == tName {
 		checkLimit(ls.fs, cc.nh, maxInt, "items in a constructor")
 		k.init(vconst, ls.fs.constant(p.ident(ls)))

@@ -1,9 +1,52 @@
 package lua
 
 import (
+	"strings"
 	"fmt"
 	"os"
-	"strings"
+)
+
+//
+// Configuration for paths
+//
+const (
+	// Lua search paths.
+	LUAPATH_DEFAULT = LUA_DIR + "?.lua;" + LUA_DIR + "?/init.lua;" + GO_DIR + "?.lua;" + GO_DIR + "?/init.lua;" + "./?.lua;" + "./?/init.lua"
+	LUA_DIR 	    = ROOT_DEFAULT + "share/lua/5.3/"
+	LUAPATH 	    = "GLUA_PATH"
+
+	// Go search paths.
+	GOPATH_DEFAULT = GO_DIR + "?.so;" + GO_DIR + "loadall.so;" + "./?.so"
+	GO_DIR 		   = ROOT_DEFAULT + "lib/lua/5.3/"
+	GOPATH 		   = "GLUA_GOPATH"
+	// System root paths.
+	ROOT_DEFAULT   = "/usr/local/"
+	ROOT   	       = "LUA_ROOT"
+
+	// PATH_MARK is the string that marks the substitution points in a template.
+	PATH_MARK = "?"
+
+	// PATH_SEP is the character that separates templates in a path.
+	PATH_SEP = ";"
+
+	// EXEC_DIR in a Windows path is replaced by the executable's directory.
+	EXEC_DIR = "!"
+
+	// LUA_DIRSEP is the directory separator (for submodules).
+	//
+	// CHANGE it if your machine does not use "/" as the directory
+	// separator and is not Windows.
+	//
+	// Windows Lua automatically uses "\".
+	DIR_SEP = "/"
+
+	// MOD_SEP (LUA_CSUBSEP/LUA_LSUBSEP) is the character that replaces dots
+	// in submodule names when searching for a Go/Lua loader.
+	MOD_SEP = DIR_SEP
+
+	// LUA_IGMARK is a mark to ignore all before it when building
+	// the luaopen_ function name.
+	IGNORE_MARK = "-"
 )
 
 const (
@@ -58,31 +101,72 @@ const (
 
 	// Number of list items to accumulate before a SETLIST instruction.
 	fieldsPerFlush = 50
+
+	// Option for multiple returns in 'pcall' and 'call'
+	multRet = -1
+)
+
+const (
+	// System variables / defaults
+	GOLUA_ROOT = "/usr/local"
+	GOLUA_PKG  =  GOLUA_ROOT + "/lib/lua/5.3/"
+	GOLUA_SRC  =  GOLUA_ROOT + "/share/lua/5.3/"
+	
+	// Go environment variables
+	GOLUAGO_V53_ENV = "GOLUAGO_V53"
+	GOLUAGO_ENV     = "GOLUAGO"
+	
+	// Lua environment variables
+	GOLUA_V53_ENV = "GOLUA_V53"
+	GOLUA_ENV     = "GOLUA"
+
+	GOLUA_INIT_V53_ENV = "GOLUA_INIT_V53"
+	GOLUA_INIT_ENV     = "GOLUA_INIT"
+
+	// Environment variable defaults
+	GOLUAGO_DEFAULT = GOLUA_SRC+"?.so;"+GOLUA_SRC+"loadall.so;"+"./?.so;"
+	GOLUA_DEFAULT   = GOLUA_SRC+"?.lua;"+GOLUA_SRC+"?/?/.lua;"+GOLUA_PKG+"?.lua;"+GOLUA_PKG+"?/?/.lua;"+"./?.lua;"+"./?/init.lua;"
 )
 
 type Config struct {
-	Stdlib func(*Thread) error
-	Import Importer
-	GoPath Path
-	Path   Path
-	Trace  bool
-	NoEnv  bool
+	GOLUA_INIT string
+	GOLUAGO    string
+	GOLUA      string
+	Trace      bool
+	NoEnv      bool
 }
 
 func (config *Config) init(rt *runtime) {
-	if config.GoPath == "" {
-		config.GoPath = Path(GOPATH_DEFAULT)
+	var (
+		env = &environ{
+			GOLUAGO: GOLUAGO_DEFAULT,
+			GOLUA:   GOLUA_DEFAULT,
+		}
+		sys = &system{
+			environ: env, 
+			stdout:  os.Stdout,
+			stderr:  os.Stderr,
+			stdin:   os.Stdin,
+			config:  config,
+		}
+	)
+	if config.GOLUA_INIT != "" {
+		env.GOLUA_INIT = config.GOLUA_INIT
 	}
-	if config.Path == "" {
-		config.Path = Path(LUAPATH_DEFAULT)
+	if config.GOLUAGO != "" {
+		env.GOLUAGO = config.GOLUAGO
 	}
-
-	config.GoPath = Path(envvar(config, GOPATH, string(config.GoPath)))
-	config.Path = Path(envvar(config, LUAPATH, string(config.Path)))
-	rt.config = config
+	if config.GOLUA != "" {
+		env.GOLUA = config.GOLUA
+	}
+	if 	rt.system = sys; !config.NoEnv {
+		env.GOLUA_INIT = envvar(config, GOLUA_INIT_ENV, GOLUA_INIT_V53_ENV, env.GOLUA_INIT)
+		env.GOLUAGO = envvar(config, GOLUAGO_ENV, GOLUAGO_V53_ENV, env.GOLUAGO)
+		env.GOLUA   = envvar(config, GOLUA_ENV, GOLUA_V53_ENV, env.GOLUA)
+	}
 }
 
-func envvar(config *Config, envVar, defVal string) (path string) {
+func envvar(config *Config, envVar, envVer, defVal string) (path string) {
 	versioned := fmt.Sprintf("%s%s", envVar, "_5_3")
 	if path = os.Getenv(versioned); path == "" {
 		path = os.Getenv(envVar)
